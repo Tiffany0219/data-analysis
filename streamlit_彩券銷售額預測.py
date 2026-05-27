@@ -1813,7 +1813,8 @@ with right:
             "beta": beta,
         }
 
-        with st.expander("模型係數"):
+        with st.expander("目前使用的 OLS 模型係數", expanded=True):
+            st.caption("這張表是系統本次預測實際讀取的係數，來源：06_OLS四模型係數表.csv。")
             coef_table = pd.DataFrame(
                 [
                     ["截距", beta["const"]],
@@ -1828,7 +1829,8 @@ with right:
                 ],
                 columns=["變數", "係數"],
             )
-            st.dataframe(coef_table, hide_index=True, width="stretch")
+            coef_table["係數"] = coef_table["係數"].round(4)
+            st.table(coef_table.style.hide(axis="index"))
 
     except ValueError:
         st.error("月份格式錯誤，請從月份選單重新選擇。")
