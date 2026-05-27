@@ -888,6 +888,22 @@ def recent_average(master_df, column, months=36, default=0.0):
     return float(values.mean())
 
 
+def recent_average_before(master_df, column, selected_month_str, months=36, default=0.0):
+    if column not in master_df.columns:
+        return default
+
+    data = master_df.copy()
+    data["月份_dt"] = pd.to_datetime(data["月份"], format="%Y-%m", errors="coerce")
+    selected_dt = month_to_datetime(selected_month_str)
+    data = data[(data["月份_dt"].notna()) & (data["月份_dt"] < selected_dt)]
+    data = data.sort_values("月份_dt").tail(months)
+
+    values = pd.to_numeric(data[column], errors="coerce").dropna()
+    if values.empty:
+        return default
+    return float(values.mean())
+
+
 def fallback_future_value(master_df, selected_month_str, target_column):
     _, base = find_base_row(master_df, selected_month_str)
     if base is None:
@@ -916,6 +932,127 @@ def fallback_future_value(master_df, selected_month_str, target_column):
         return default_latest_values(master_df)["jackpot"]
 
     return default_latest_values(master_df)[target_column]
+
+
+def estimate_future_current_values(master_df, selected_month_str):
+    _, base = find_base_row(master_df, selected_month_str)
+    if base is None:
+        return None
+
+    cpi_growth = recent_average_before(master_df, "通膨率", selected_month_str, default=1.5)
+    unemp_change = recent_average_before(master_df, "失業率年變動_pp", selected_month_str, default=0.0)
+    cci_change = recent_average_before(master_df, "CCI年變動", selected_month_str, default=0.0)
+    taiex_growth = recent_average_before(master_df, "TAIEX年增率", selected_month_str, default=0.0)
+    festival = get_festival_flags(selected_month_str)
+
+    return {
+        "cpi": float(base["CPI總指數"]) * (1 + cpi_growth / 100),
+        "unemp": max(float(base["失業率"]) + unemp_change, 0),
+        "cci": max(float(base["CCI"]) + cci_change, 0),
+        "taiex": float(base["TAIEX月平均收盤指數"]) * (1 + taiex_growth / 100),
+        "jackpot": float(base["電腦型彩券最高連槓獎金"]) / 100000000,
+        "spring": festival["spring"],
+        "dragon": festival["dragon"],
+        "mid_autumn": festival["mid_autumn"],
+    }
+
+
+def build_future_method_backtest(master_df, beta):
+    candidate_months = [
+        "2024-02",
+        "2024-06",
+        "2024-09",
+        "2024-12",
+        "2025-01",
+        "2025-02",
+        "2025-06",
+        "2025-10",
+        "2025-12",
+    ]
+
+    rows = []
+    for month_text in candidate_months:
+        current_row = find_current_row(master_df, month_text)
+        base_month, base = find_base_row(master_df, month_text)
+        estimated_current = estimate_future_current_values(master_df, month_text)
+
+        if current_row is None or base is None or estimated_current is None:
+            continue
+
+        features = calculate_features(estimated_current, base)
+        prediction = predict_sales(features, beta)
+        actual = float(current_row["電腦型彩券總銷售額"]) / 100000000
+        error = prediction - actual
+        festival_names = []
+        if features["spring"]:
+            festival_names.append("春節")
+        if features["dragon"]:
+            festival_names.append("端午")
+        if features["mid_autumn"]:
+            festival_names.append("中秋")
+
+        rows.append(
+            {
+                "月份": month_text,
+                "去年同月": base_month,
+                "月份類型": "、".join(festival_names) if festival_names else "一般月",
+                "預測銷售額(億)": round(prediction, 2),
+                "實際銷售額(億)": round(actual, 2),
+                "誤差(億)": round(error, 2),
+                "絕對誤差(億)": round(abs(error), 2),
+                "誤差率": round(error / actual * 100, 2) if actual else 0,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def render_future_method_backtest(master_df, beta):
+    backtest = build_future_method_backtest(master_df, beta)
+    if backtest.empty:
+        st.info("目前沒有足夠資料可以做回測。")
+        return
+
+    avg_abs_error = backtest["絕對誤差(億)"].mean()
+    avg_abs_pct_error = backtest["誤差率"].abs().mean()
+
+    st.caption(
+        "回測做法：假裝下列月份還沒發生，用「去年同月 + 當時可得的近三年平均變化」先估總體變數，"
+        "再代入 OLS 模型，最後和該月實際銷售額比較。"
+    )
+    m1, m2 = st.columns(2)
+    with m1:
+        metric_card("平均絕對誤差", f"{avg_abs_error:.2f} 億元")
+    with m2:
+        metric_card("平均絕對誤差率", f"{avg_abs_pct_error:.1f}%")
+
+    display = backtest.copy()
+    display["誤差率"] = display["誤差率"].map(lambda value: f"{value:+.2f}%")
+    display["誤差(億)"] = display["誤差(億)"].map(lambda value: f"{value:+.2f}")
+    st.table(display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
+
+    chart_data = backtest.melt(
+        id_vars=["月份"],
+        value_vars=["預測銷售額(億)", "實際銷售額(億)"],
+        var_name="類型",
+        value_name="銷售額(億)",
+    )
+    chart = (
+        alt.Chart(chart_data)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("月份:N", title="月份"),
+            y=alt.Y("銷售額(億):Q", title="銷售額（億元）"),
+            color=alt.Color("類型:N", title="類型"),
+            tooltip=[
+                alt.Tooltip("月份:N", title="月份"),
+                alt.Tooltip("類型:N", title="類型"),
+                alt.Tooltip("銷售額(億):Q", title="銷售額", format=".2f"),
+            ],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(chart, width="stretch")
 
 
 def selected_month_defaults(master_df, forecast_df, selected_month_str):
@@ -1730,6 +1867,9 @@ with st.expander("連槓獎金情境預測", expanded=False):
             st.table(pd.DataFrame(rows).style.hide(axis="index"))
     except Exception:
         pass
+
+with st.expander("未來估算法回測", expanded=False):
+    render_future_method_backtest(master, beta)
 
 with st.expander("模型方法與未來月份估算說明", expanded=False):
     st.markdown(
