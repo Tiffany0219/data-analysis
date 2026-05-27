@@ -52,7 +52,6 @@ def load_master():
     return df
 
 
-@st.cache_data
 def load_coefficients_for_model(model_name):
     coef = pd.read_csv(COEF_PATH, encoding="utf-8-sig")
     coef.columns = coef.columns.str.strip()
@@ -67,7 +66,6 @@ def load_coefficients_for_model(model_name):
     return values
 
 
-@st.cache_data
 def load_coefficients():
     return load_coefficients_for_model(MODEL_NAME)
 
@@ -1813,7 +1811,7 @@ with right:
             "beta": beta,
         }
 
-        with st.expander("目前使用的 OLS 模型係數", expanded=True):
+        with st.expander("目前使用的 OLS 模型係數", expanded=False):
             st.caption("這張表是系統本次預測實際讀取的係數，來源：06_OLS四模型係數表.csv。")
             coef_table = pd.DataFrame(
                 [
