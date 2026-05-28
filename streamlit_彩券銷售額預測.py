@@ -549,7 +549,7 @@ def contribution_direction(value):
     return "拉低"
 
 
-def build_interpretation(prediction, features):
+def build_interpretation(prediction, features, jackpot_source=None):
     festival_names = []
     if features["spring"]:
         festival_names.append("春節")
@@ -564,9 +564,16 @@ def build_interpretation(prediction, features):
         if features["jackpot"] >= 10
         else "連槓獎金未達高額門檻，買氣主要受一般月份與總體變數影響"
     )
+    if jackpot_source == "歷史實際資料":
+        jackpot_source_text = "連槓獎金使用該月份歷史實際資料，"
+    elif jackpot_source:
+        jackpot_source_text = f"連槓獎金採用「{jackpot_source}」作為情境輸入，"
+    else:
+        jackpot_source_text = ""
     return (
         f"本月預測電腦型彩券總銷售額約為 {prediction:.2f} 億元。"
         f"節慶判斷為「{festival_text}」，{jackpot_text}。"
+        f"{jackpot_source_text}"
         "此結果為 OLS 模型估計值，適合用來比較不同月份或不同連槓獎金情境下的買氣變化，"
         "不代表中獎機率或購買建議。"
     )
@@ -607,13 +614,13 @@ def build_month_sales_chart_data(master_df, selected_month_str, prediction):
     return chart
 
 
-def render_prediction_analysis(master_df, selected_month_str, prediction, features, beta):
+def render_prediction_analysis(master_df, selected_month_str, prediction, features, beta, jackpot_source=None):
     st.markdown('<div class="section-heading">預測結果分析</div>', unsafe_allow_html=True)
     analysis_left, analysis_right = st.columns([1.25, 1], gap="large")
 
     with analysis_left:
         st.write("模型解讀")
-        st.write(build_interpretation(prediction, features))
+        st.write(build_interpretation(prediction, features, jackpot_source))
 
         st.write("同月份歷史銷售額與本次預測")
         chart_data = build_month_sales_chart_data(master_df, selected_month_str, prediction)
@@ -866,6 +873,59 @@ def latest_positive_value(*sources):
     return 0.0
 
 
+def latest_available_jackpot(master_df, forecast_df=None, before_month=None):
+    rows = []
+
+    def append_candidates(df, month_col, value_col, source_label, divisor=1):
+        if df is None or df.empty or month_col not in df.columns or value_col not in df.columns:
+            return
+
+        data = df[[month_col, value_col]].copy()
+        data["月份"] = normalize_month_series(data[month_col])
+        data["月份_dt"] = pd.to_datetime(data["月份"], format="%Y-%m", errors="coerce")
+        data["jackpot"] = pd.to_numeric(data[value_col], errors="coerce") / divisor
+        data = data[(data["月份_dt"].notna()) & (data["jackpot"].notna()) & (data["jackpot"] > 0)]
+        if before_month is not None:
+            before_dt = month_to_datetime(before_month)
+            data = data[data["月份_dt"] < before_dt]
+
+        for _, item in data.iterrows():
+            rows.append(
+                {
+                    "月份": item["月份"],
+                    "月份_dt": item["月份_dt"],
+                    "jackpot": float(item["jackpot"]),
+                    "source": source_label,
+                }
+            )
+
+    append_candidates(
+        master_df,
+        "月份",
+        "電腦型彩券最高連槓獎金",
+        "master_dataset 最新可得資料",
+        divisor=100000000,
+    )
+    append_candidates(
+        forecast_df,
+        "月份",
+        "連槓獎金(億)",
+        "2026 最新彙整資料",
+        divisor=1,
+    )
+
+    if not rows:
+        latest = default_latest_values(master_df)
+        return latest["jackpot"], "資料庫最新一期", latest["month"]
+
+    latest_row = pd.DataFrame(rows).sort_values("月份_dt").iloc[-1]
+    return (
+        round(float(latest_row["jackpot"]), 2),
+        str(latest_row["source"]),
+        str(latest_row["月份"]),
+    )
+
+
 def get_positive_value(row, column):
     if row is None or column not in row or pd.isna(row[column]):
         return None
@@ -923,11 +983,6 @@ def fallback_future_value(master_df, selected_month_str, target_column):
         growth = recent_average(master_df, "TAIEX年增率", default=0.0)
         return round(float(base["TAIEX月平均收盤指數"]) * (1 + growth / 100), 2)
 
-    if target_column == "jackpot":
-        if "電腦型彩券最高連槓獎金" in base:
-            return round(float(base["電腦型彩券最高連槓獎金"]) / 100000000, 2)
-        return default_latest_values(master_df)["jackpot"]
-
     return default_latest_values(master_df)[target_column]
 
 
@@ -940,6 +995,7 @@ def estimate_future_current_values(master_df, selected_month_str):
     unemp_change = recent_average_before(master_df, "失業率年變動_pp", selected_month_str, default=0.0)
     cci_change = recent_average_before(master_df, "CCI年變動", selected_month_str, default=0.0)
     taiex_growth = recent_average_before(master_df, "TAIEX年增率", selected_month_str, default=0.0)
+    jackpot, _, _ = latest_available_jackpot(master_df, before_month=selected_month_str)
     festival = get_festival_flags(selected_month_str)
 
     return {
@@ -947,7 +1003,7 @@ def estimate_future_current_values(master_df, selected_month_str):
         "unemp": max(float(base["失業率"]) + unemp_change, 0),
         "cci": max(float(base["CCI"]) + cci_change, 0),
         "taiex": float(base["TAIEX月平均收盤指數"]) * (1 + taiex_growth / 100),
-        "jackpot": float(base["電腦型彩券最高連槓獎金"]) / 100000000,
+        "jackpot": jackpot,
         "spring": festival["spring"],
         "dragon": festival["dragon"],
         "mid_autumn": festival["mid_autumn"],
@@ -1063,14 +1119,16 @@ def selected_month_defaults(master_df, forecast_df, selected_month_str):
     unemp = get_positive_value(forecast_row, "失業率")
     cci = get_positive_value(forecast_row, "CCI")
     taiex = get_positive_value(forecast_row, "TAIEX月平均收盤指數")
-    jackpot = get_positive_value(forecast_row, "連槓獎金(億)")
+    jackpot, jackpot_source, jackpot_month = latest_available_jackpot(master_df, forecast_df)
 
     return {
         "cpi": cpi or fallback_future_value(master_df, selected_month_str, "cpi"),
         "unemp": unemp or fallback_future_value(master_df, selected_month_str, "unemp"),
         "cci": cci or fallback_future_value(master_df, selected_month_str, "cci"),
         "taiex": taiex or fallback_future_value(master_df, selected_month_str, "taiex"),
-        "jackpot": jackpot or fallback_future_value(master_df, selected_month_str, "jackpot"),
+        "jackpot": jackpot,
+        "jackpot_source": jackpot_source,
+        "jackpot_month": jackpot_month,
     }
 
 
@@ -1579,10 +1637,14 @@ with left:
 
     input_label_prefix = "預估" if future_mode else "當月"
     jackpot_label = "預估最高連槓獎金（億）" if future_mode else "當月最高連槓獎金（億）"
+    jackpot_source = "歷史實際資料"
 
     if future_mode:
         st.write("預測情境設定")
         level_defaults = selected_month_defaults(master, forecast_2026, selected_month_str)
+        latest_jackpot = max(float(level_defaults["jackpot"]), 0.0)
+        latest_jackpot_month = level_defaults.get("jackpot_month", "最新月份")
+        latest_jackpot_source = level_defaults.get("jackpot_source", "最新可得資料")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -1619,14 +1681,45 @@ with left:
                 value=level_defaults["taiex"],
                 key=f"future_taiex_{selected_month_str}",
             )
-            jackpot = st.number_input(
-                jackpot_label,
-                min_value=0.0,
-                step=0.5,
-                format="%.2f",
-                value=max(level_defaults["jackpot"], 0.0),
-                key=f"future_jackpot_{selected_month_str}",
+            jackpot_scenario = st.selectbox(
+                "連槓獎金情境",
+                options=[
+                    "最新可得連槓獎金",
+                    "低連槓情境：5 億元",
+                    "中連槓情境：10 億元",
+                    "高連槓情境：20 億元",
+                    "極高連槓情境：30 億元",
+                    "自訂",
+                ],
+                key=f"future_jackpot_scenario_{selected_month_str}",
             )
+            scenario_values = {
+                "最新可得連槓獎金": (latest_jackpot, f"最新可得資料（{latest_jackpot_source}，{latest_jackpot_month}）"),
+                "低連槓情境：5 億元": (5.0, "低連槓情境"),
+                "中連槓情境：10 億元": (10.0, "中連槓情境"),
+                "高連槓情境：20 億元": (20.0, "高連槓情境"),
+                "極高連槓情境：30 億元": (30.0, "極高連槓情境"),
+            }
+            if jackpot_scenario == "自訂":
+                jackpot = st.number_input(
+                    "自訂連槓獎金（億）",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.2f",
+                    value=latest_jackpot,
+                    key=f"future_custom_jackpot_{selected_month_str}",
+                )
+                jackpot_source = "使用者自訂"
+            else:
+                jackpot, jackpot_source = scenario_values[jackpot_scenario]
+                st.info(f"目前連槓獎金來源：{jackpot_source}，代入 {jackpot:.2f} 億元。")
+
+        ref_base_month, ref_base = find_base_row(master, selected_month_str)
+        if ref_base is not None and "電腦型彩券最高連槓獎金" in ref_base:
+            ref_jackpot = float(ref_base["電腦型彩券最高連槓獎金"]) / 100000000
+            with st.expander("去年同月連槓獎金參考", expanded=False):
+                st.write(f"去年同月：{ref_base_month}")
+                st.write(f"去年同月連槓獎金：{ref_jackpot:.2f} 億元，僅供參考。")
     else:
         level_defaults = selected_month_defaults(master, forecast_2026, selected_month_str)
         c1, c2 = st.columns(2)
@@ -1672,6 +1765,7 @@ with left:
                 value=max(level_defaults["jackpot"], 0.0),
                 key=f"jackpot_{selected_month_str}",
             )
+            st.info("目前連槓獎金來源：歷史實際資料。")
 
     st.write("節慶設定")
     f1, f2, f3 = st.columns(3)
@@ -1766,12 +1860,16 @@ with right:
         elif actual_sales is not None and not future_mode:
             source_status = "使用已匯入實際資料"
         else:
-            source_status = "使用基準情境估算"
+            source_status = "使用基準情境估算；連槓獎金為情境輸入"
 
         st.write(f"預測月份：{selected_month_str}；去年同月：{base_month}")
         st.write(f"資料來源狀態：{source_status}")
+        st.write(f"連槓獎金來源：{jackpot_source}")
         if future_mode:
-            st.caption(f"系統會自動和 {base_month} 比較，換算成模型需要的年增率與年變動。")
+            st.caption(
+                f"系統會自動和 {base_month} 比較，換算成模型需要的年增率與年變動；"
+                "連槓獎金因隨機性高，採情境輸入而非精準預測。"
+            )
         else:
             st.caption(f"基準月份：{base_month}（用來計算年增率與年變動）")
 
@@ -1794,6 +1892,7 @@ with right:
                     ["CCI年變動", f"{features['cci_change']:.2f}"],
                     ["TAIEX年增率(%)", f"{features['taiex_yoy']:.2f}%"],
                     ["連槓獎金(億)", f"{features['jackpot']:.2f}"],
+                    ["連槓獎金來源", jackpot_source],
                     ["春節", "是" if features["spring"] else "否"],
                     ["端午", "是" if features["dragon"] else "否"],
                     ["中秋", "是" if features["mid_autumn"] else "否"],
@@ -1808,6 +1907,7 @@ with right:
             "prediction": prediction,
             "features": features,
             "beta": beta,
+            "jackpot_source": jackpot_source,
         }
 
         with st.expander("目前使用的 OLS 模型係數", expanded=False):
@@ -1888,7 +1988,7 @@ with st.expander("模型方法與未來月份估算說明", expanded=False):
                 <li>預估當月失業率 = 去年同月失業率 + 近三年平均失業率年變動</li>
                 <li>預估當月 CCI = 去年同月 CCI + 近三年平均 CCI 年變動</li>
                 <li>預估當月 TAIEX = 去年同月 TAIEX × (1 + 近三年平均 TAIEX 年增率 / 100)</li>
-                <li>預估當月連槓獎金 = 去年同月連槓獎金，並保留手動調整</li>
+                <li>連槓獎金不使用趨勢外推；未來月份改用最新可得、低 / 中 / 高 / 極高或自訂情境輸入</li>
             </ol>
         </div>
         """,
