@@ -1226,12 +1226,12 @@ def render_future_method_backtest(master_df, beta):
         backtest["區間校準預測銷售額(億)"] - backtest["實際銷售額(億)"]
     ).mean()
 
-    st.caption(
-        "回測做法：使用 2023-2025 年部分月份，假設該月尚未發生，"
-        "先以「去年同月 + 當時可得的近三年平均變化」估算總體變數，"
-        "再代入 OLS 預測模型，最後與該月實際銷售額比較。"
+    st.info(
+        "這裡是在檢查預測模型準不準：使用 2023-2025 年部分月份做回測，"
+        "假裝該月還沒發生，先用當時可取得的資料估算模型變數，"
+        "再把預測銷售額和實際銷售額相比。"
     )
-    st.write("連槓獎金校準結果")
+    st.write("預測模型回測結果")
     m1, m2 = st.columns(2)
     with m1:
         calibrated_text = f"{calibrated_mae:.2f} 億元" if calibrated_mae is not None else "無法計算"
@@ -1244,8 +1244,7 @@ def render_future_method_backtest(master_df, beta):
         )
 
     st.caption(
-        "解讀方式：平均誤差代表模型預測通常會和實際銷售額相差多少；"
-        "實際與預測平均差則用來判斷模型是否整體偏高估或偏低估。"
+        "平均誤差代表模型通常會差多少；實際與預測平均差則看模型有沒有整體偏高估或偏低估。"
     )
     st.write("回測重點")
     key_columns = [
