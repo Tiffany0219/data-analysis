@@ -1035,7 +1035,9 @@ def build_future_method_backtest(master_df, beta):
         features = calculate_features(estimated_current, base)
         prediction = predict_sales(features, beta)
         actual = float(current_row["電腦型彩券總銷售額"]) / 100000000
+        actual_jackpot = float(current_row["電腦型彩券最高連槓獎金"]) / 100000000
         error = prediction - actual
+        calibrated_jackpot = max(features["jackpot"] - error / beta["jackpot"], 0)
         festival_names = []
         if features["spring"]:
             festival_names.append("春節")
@@ -1049,6 +1051,9 @@ def build_future_method_backtest(master_df, beta):
                 "月份": month_text,
                 "去年同月": base_month,
                 "月份類型": "、".join(festival_names) if festival_names else "一般月",
+                "實際連槓獎金(億)": round(actual_jackpot, 2),
+                "原估連槓獎金(億)": round(features["jackpot"], 2),
+                "校準後連槓獎金(億)": round(calibrated_jackpot, 2),
                 "預測銷售額(億)": round(prediction, 2),
                 "實際銷售額(億)": round(actual, 2),
                 "誤差(億)": round(error, 2),
@@ -1057,6 +1062,42 @@ def build_future_method_backtest(master_df, beta):
             }
         )
 
+    return pd.DataFrame(rows)
+
+
+def build_calibrated_jackpot_scenarios(master_df, beta):
+    backtest = build_future_method_backtest(master_df, beta)
+    if backtest.empty or "校準後連槓獎金(億)" not in backtest.columns:
+        return pd.DataFrame()
+
+    values = pd.to_numeric(backtest["校準後連槓獎金(億)"], errors="coerce").dropna()
+    values = values[values > 0]
+    if values.empty:
+        return pd.DataFrame()
+
+    quantiles = values.quantile([0, 0.25, 0.50, 0.75, 1.0]).tolist()
+    labels = ["低連槓", "中連槓", "高連槓", "極高連槓"]
+    rows = []
+    for index, label in enumerate(labels):
+        low = float(quantiles[index])
+        high = float(quantiles[index + 1])
+        if index == 0:
+            group = values[(values >= low) & (values <= high)]
+        else:
+            group = values[(values > low) & (values <= high)]
+        if group.empty:
+            default_value = (low + high) / 2
+        else:
+            default_value = float(group.median())
+        rows.append(
+            {
+                "情境": label,
+                "下限": round(low, 2),
+                "上限": round(high, 2),
+                "代入值": round(default_value, 2),
+                "樣本數": int(len(group)),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -1083,6 +1124,24 @@ def render_future_method_backtest(master_df, beta):
     display["誤差率"] = display["誤差率"].map(lambda value: f"{value:+.2f}%")
     display["誤差(億)"] = display["誤差(億)"].map(lambda value: f"{value:+.2f}")
     st.table(display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
+
+    calibrated = build_calibrated_jackpot_scenarios(master_df, beta)
+    if not calibrated.empty:
+        st.write("由回測誤差反推的連槓獎金情境區間")
+        st.caption(
+            "校準方式：若其他變數不變，反推需要多少連槓獎金可讓該月預測更接近實際值，"
+            "再依校準後金額切成低 / 中 / 高 / 極高區間。"
+        )
+        scenario_display = calibrated.copy()
+        scenario_display["區間"] = scenario_display.apply(
+            lambda row: f"{row['下限']:.2f} - {row['上限']:.2f} 億",
+            axis=1,
+        )
+        scenario_display["建議代入值"] = scenario_display["代入值"].map(lambda value: f"{value:.2f} 億")
+        st.table(
+            scenario_display[["情境", "區間", "建議代入值", "樣本數"]]
+            .style.hide(axis="index")
+        )
 
     chart_data = backtest.melt(
         id_vars=["月份"],
@@ -1645,6 +1704,11 @@ with left:
         latest_jackpot = max(float(level_defaults["jackpot"]), 0.0)
         latest_jackpot_month = level_defaults.get("jackpot_month", "最新月份")
         latest_jackpot_source = level_defaults.get("jackpot_source", "最新可得資料")
+        calibrated_scenarios = build_calibrated_jackpot_scenarios(master, beta)
+        calibrated_lookup = {
+            row["情境"]: row
+            for _, row in calibrated_scenarios.iterrows()
+        } if not calibrated_scenarios.empty else {}
 
         c1, c2 = st.columns(2)
         with c1:
@@ -1685,21 +1749,35 @@ with left:
                 "連槓獎金情境",
                 options=[
                     "最新可得連槓獎金",
-                    "低連槓情境：5 億元",
-                    "中連槓情境：10 億元",
-                    "高連槓情境：20 億元",
-                    "極高連槓情境：30 億元",
+                    "低連槓情境",
+                    "中連槓情境",
+                    "高連槓情境",
+                    "極高連槓情境",
                     "自訂",
                 ],
                 key=f"future_jackpot_scenario_{selected_month_str}",
             )
             scenario_values = {
                 "最新可得連槓獎金": (latest_jackpot, f"最新可得資料（{latest_jackpot_source}，{latest_jackpot_month}）"),
-                "低連槓情境：5 億元": (5.0, "低連槓情境"),
-                "中連槓情境：10 億元": (10.0, "中連槓情境"),
-                "高連槓情境：20 億元": (20.0, "高連槓情境"),
-                "極高連槓情境：30 億元": (30.0, "極高連槓情境"),
             }
+            fallback_scenarios = {
+                "低連槓情境": 5.0,
+                "中連槓情境": 10.0,
+                "高連槓情境": 20.0,
+                "極高連槓情境": 30.0,
+            }
+            for scenario_name, fallback_value in fallback_scenarios.items():
+                label = scenario_name.replace("情境", "")
+                row = calibrated_lookup.get(label)
+                if row is None:
+                    scenario_values[scenario_name] = (fallback_value, scenario_name)
+                else:
+                    source = (
+                        f"{scenario_name}（校準區間 {row['下限']:.2f} - {row['上限']:.2f} 億，"
+                        f"代入 {row['代入值']:.2f} 億）"
+                    )
+                    scenario_values[scenario_name] = (float(row["代入值"]), source)
+
             if jackpot_scenario == "自訂":
                 jackpot = st.number_input(
                     "自訂連槓獎金（億）",
@@ -1713,6 +1791,20 @@ with left:
             else:
                 jackpot, jackpot_source = scenario_values[jackpot_scenario]
                 st.info(f"目前連槓獎金來源：{jackpot_source}，代入 {jackpot:.2f} 億元。")
+
+            if not calibrated_scenarios.empty:
+                with st.expander("連槓情境區間說明", expanded=False):
+                    st.caption("區間由下方回測月份的誤差反推，目的是讓未來情境更貼近歷史回測表現。")
+                    scenario_display = calibrated_scenarios.copy()
+                    scenario_display["區間"] = scenario_display.apply(
+                        lambda row: f"{row['下限']:.2f} - {row['上限']:.2f} 億",
+                        axis=1,
+                    )
+                    scenario_display["建議代入值"] = scenario_display["代入值"].map(lambda value: f"{value:.2f} 億")
+                    st.table(
+                        scenario_display[["情境", "區間", "建議代入值", "樣本數"]]
+                        .style.hide(axis="index")
+                    )
 
         ref_base_month, ref_base = find_base_row(master, selected_month_str)
         if ref_base is not None and "電腦型彩券最高連槓獎金" in ref_base:
