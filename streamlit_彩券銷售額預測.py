@@ -469,6 +469,32 @@ def predict_sales(features, beta):
     )
 
 
+def predict_sales_without_jackpot(features, beta):
+    return (
+        beta["const"]
+        + beta["cpi_yoy"] * features["cpi_yoy"]
+        + beta["unemp_change"] * features["unemp_change"]
+        + beta["cci_change"] * features["cci_change"]
+        + beta["taiex_yoy"] * features["taiex_yoy"]
+        + beta["spring"] * features["spring"]
+        + beta["dragon"] * features["dragon"]
+        + beta["mid_autumn"] * features["mid_autumn"]
+    )
+
+
+def error_metrics(actual, predicted):
+    actual = pd.to_numeric(actual, errors="coerce")
+    predicted = pd.to_numeric(predicted, errors="coerce")
+    data = pd.DataFrame({"actual": actual, "predicted": predicted}).dropna()
+    data = data[data["actual"] != 0]
+    if data.empty:
+        return None, None
+    error = data["predicted"] - data["actual"]
+    mae = float(error.abs().mean())
+    mape = float((error.abs() / data["actual"] * 100).mean())
+    return mae, mape
+
+
 def classify_heat_level(master_df, prediction):
     if Y_LABEL not in master_df.columns:
         return "無法判斷"
@@ -1010,7 +1036,108 @@ def estimate_future_current_values(master_df, selected_month_str):
     }
 
 
-def build_future_method_backtest(master_df, beta):
+def classify_jackpot_interval(value, scenarios):
+    if scenarios.empty or pd.isna(value):
+        return None
+    for index, row in scenarios.reset_index(drop=True).iterrows():
+        low = float(row["最小值"])
+        high = float(row["最大值"])
+        if index == 0 and low <= value <= high:
+            return row
+        if low < value <= high:
+            return row
+    return scenarios.iloc[-1] if value > float(scenarios.iloc[-1]["最大值"]) else None
+
+
+def build_calibrated_jackpot_scenarios_from_backtest(backtest, beta):
+    if backtest.empty or "最佳連槓獎金(億)" not in backtest.columns:
+        return pd.DataFrame()
+
+    values = pd.to_numeric(backtest["最佳連槓獎金(億)"], errors="coerce").dropna()
+    values = values[values >= 0]
+    if values.empty:
+        return pd.DataFrame()
+
+    quantiles = values.quantile([0, 0.25, 0.50, 0.75, 1.0]).tolist()
+    labels = ["低連槓", "中連槓", "高連槓", "極高連槓"]
+    rows = []
+    for index, label in enumerate(labels):
+        low = float(quantiles[index])
+        high = float(quantiles[index + 1])
+        if index == 0:
+            group = backtest[
+                (pd.to_numeric(backtest["最佳連槓獎金(億)"], errors="coerce") >= low)
+                & (pd.to_numeric(backtest["最佳連槓獎金(億)"], errors="coerce") <= high)
+            ].copy()
+        else:
+            group = backtest[
+                (pd.to_numeric(backtest["最佳連槓獎金(億)"], errors="coerce") > low)
+                & (pd.to_numeric(backtest["最佳連槓獎金(億)"], errors="coerce") <= high)
+            ].copy()
+
+        if group.empty:
+            median_value = (low + high) / 2
+            mae = None
+            mape = None
+        else:
+            median_value = float(pd.to_numeric(group["最佳連槓獎金(億)"], errors="coerce").median())
+            calibrated_prediction = (
+                pd.to_numeric(group["不含連槓基礎預測(億)"], errors="coerce")
+                + beta["jackpot"] * median_value
+            )
+            mae, mape = error_metrics(group["實際銷售額(億)"], calibrated_prediction)
+
+        rows.append(
+            {
+                "情境": label,
+                "最小值": round(low, 2),
+                "最大值": round(high, 2),
+                "中位數": round(median_value, 2),
+                "校準後MAE": round(mae, 2) if mae is not None else None,
+                "校準後MAPE": round(mape, 2) if mape is not None else None,
+                "樣本數": int(len(group)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def add_interval_calibration(backtest, scenarios, beta):
+    if backtest.empty or scenarios.empty:
+        return backtest
+
+    rows = []
+    for _, row in backtest.iterrows():
+        scenario = classify_jackpot_interval(row["最佳連槓獎金(億)"], scenarios)
+        if scenario is None:
+            category = "未分類"
+            representative = row["最佳連槓獎金(億)"]
+        else:
+            category = scenario["情境"]
+            representative = float(scenario["中位數"])
+
+        calibrated_prediction = row["不含連槓基礎預測(億)"] + beta["jackpot"] * representative
+        calibrated_error = calibrated_prediction - row["實際銷售額(億)"]
+        calibrated_error_rate = (
+            calibrated_error / row["實際銷售額(億)"] * 100
+            if row["實際銷售額(億)"]
+            else 0
+        )
+        updated = row.to_dict()
+        updated.update(
+            {
+                "依最佳連槓區間分類": category,
+                "區間代表連槓獎金(億)": round(representative, 2),
+                "區間校準預測銷售額(億)": round(calibrated_prediction, 2),
+                "區間校準誤差(億)": round(calibrated_error, 2),
+                "區間校準誤差率": round(calibrated_error_rate, 2),
+                "區間校準絕對誤差(億)": round(abs(calibrated_error), 2),
+            }
+        )
+        rows.append(updated)
+    return pd.DataFrame(rows)
+
+
+def build_future_method_backtest(master_df, beta, include_interval=True):
     candidate_months = [
         "2024-02",
         "2024-06",
@@ -1034,10 +1161,17 @@ def build_future_method_backtest(master_df, beta):
 
         features = calculate_features(estimated_current, base)
         prediction = predict_sales(features, beta)
+        base_prediction_without_jackpot = predict_sales_without_jackpot(features, beta)
         actual = float(current_row["電腦型彩券總銷售額"]) / 100000000
         actual_jackpot = float(current_row["電腦型彩券最高連槓獎金"]) / 100000000
         error = prediction - actual
-        calibrated_jackpot = max(features["jackpot"] - error / beta["jackpot"], 0)
+        if beta.get("jackpot", 0) == 0:
+            best_jackpot = 0
+        else:
+            best_jackpot = max(
+                (actual - base_prediction_without_jackpot) / beta["jackpot"],
+                0,
+            )
         festival_names = []
         if features["spring"]:
             festival_names.append("春節")
@@ -1053,7 +1187,9 @@ def build_future_method_backtest(master_df, beta):
                 "月份類型": "、".join(festival_names) if festival_names else "一般月",
                 "實際連槓獎金(億)": round(actual_jackpot, 2),
                 "原估連槓獎金(億)": round(features["jackpot"], 2),
-                "校準後連槓獎金(億)": round(calibrated_jackpot, 2),
+                "校準後連槓獎金(億)": round(best_jackpot, 2),
+                "最佳連槓獎金(億)": round(best_jackpot, 2),
+                "不含連槓基礎預測(億)": round(base_prediction_without_jackpot, 2),
                 "預測銷售額(億)": round(prediction, 2),
                 "實際銷售額(億)": round(actual, 2),
                 "誤差(億)": round(error, 2),
@@ -1062,43 +1198,16 @@ def build_future_method_backtest(master_df, beta):
             }
         )
 
-    return pd.DataFrame(rows)
+    backtest = pd.DataFrame(rows)
+    if include_interval:
+        scenarios = build_calibrated_jackpot_scenarios_from_backtest(backtest, beta)
+        backtest = add_interval_calibration(backtest, scenarios, beta)
+    return backtest
 
 
 def build_calibrated_jackpot_scenarios(master_df, beta):
-    backtest = build_future_method_backtest(master_df, beta)
-    if backtest.empty or "校準後連槓獎金(億)" not in backtest.columns:
-        return pd.DataFrame()
-
-    values = pd.to_numeric(backtest["校準後連槓獎金(億)"], errors="coerce").dropna()
-    values = values[values > 0]
-    if values.empty:
-        return pd.DataFrame()
-
-    quantiles = values.quantile([0, 0.25, 0.50, 0.75, 1.0]).tolist()
-    labels = ["低連槓", "中連槓", "高連槓", "極高連槓"]
-    rows = []
-    for index, label in enumerate(labels):
-        low = float(quantiles[index])
-        high = float(quantiles[index + 1])
-        if index == 0:
-            group = values[(values >= low) & (values <= high)]
-        else:
-            group = values[(values > low) & (values <= high)]
-        if group.empty:
-            default_value = (low + high) / 2
-        else:
-            default_value = float(group.median())
-        rows.append(
-            {
-                "情境": label,
-                "下限": round(low, 2),
-                "上限": round(high, 2),
-                "代入值": round(default_value, 2),
-                "樣本數": int(len(group)),
-            }
-        )
-    return pd.DataFrame(rows)
+    backtest = build_future_method_backtest(master_df, beta, include_interval=False)
+    return build_calibrated_jackpot_scenarios_from_backtest(backtest, beta)
 
 
 def render_future_method_backtest(master_df, beta):
@@ -1109,37 +1218,62 @@ def render_future_method_backtest(master_df, beta):
 
     avg_abs_error = backtest["絕對誤差(億)"].mean()
     avg_abs_pct_error = backtest["誤差率"].abs().mean()
+    calibrated_mae, calibrated_mape = error_metrics(
+        backtest["實際銷售額(億)"],
+        backtest["區間校準預測銷售額(億)"],
+    )
+    improvement = (
+        (avg_abs_error - calibrated_mae) / avg_abs_error * 100
+        if calibrated_mae is not None and avg_abs_error
+        else None
+    )
 
     st.caption(
         "回測做法：假裝下列月份還沒發生，用「去年同月 + 當時可得的近三年平均變化」先估總體變數，"
         "再代入 OLS 模型，最後和該月實際銷售額比較。"
     )
-    m1, m2 = st.columns(2)
+    st.write("連槓獎金校準結果")
+    m1, m2, m3 = st.columns(3)
     with m1:
-        metric_card("平均絕對誤差", f"{avg_abs_error:.2f} 億元")
+        metric_card("原估 MAE", f"{avg_abs_error:.2f} 億元", note=f"MAPE {avg_abs_pct_error:.1f}%")
     with m2:
-        metric_card("平均絕對誤差率", f"{avg_abs_pct_error:.1f}%")
+        calibrated_text = f"{calibrated_mae:.2f} 億元" if calibrated_mae is not None else "無法計算"
+        calibrated_note = f"MAPE {calibrated_mape:.1f}%" if calibrated_mape is not None else None
+        metric_card("區間校準 MAE", calibrated_text, note=calibrated_note)
+    with m3:
+        improvement_text = f"{improvement:.1f}%" if improvement is not None else "無法計算"
+        improvement_note = (
+            f"MAE 從 {avg_abs_error:.2f} 億降到 {calibrated_mae:.2f} 億"
+            if calibrated_mae is not None
+            else None
+        )
+        metric_card("誤差改善幅度", improvement_text, note=improvement_note)
 
     display = backtest.copy()
     display["誤差率"] = display["誤差率"].map(lambda value: f"{value:+.2f}%")
     display["誤差(億)"] = display["誤差(億)"].map(lambda value: f"{value:+.2f}")
+    if "區間校準誤差率" in display.columns:
+        display["區間校準誤差率"] = display["區間校準誤差率"].map(lambda value: f"{value:+.2f}%")
+    if "區間校準誤差(億)" in display.columns:
+        display["區間校準誤差(億)"] = display["區間校準誤差(億)"].map(lambda value: f"{value:+.2f}")
     st.table(display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
 
     calibrated = build_calibrated_jackpot_scenarios(master_df, beta)
     if not calibrated.empty:
-        st.write("由回測誤差反推的連槓獎金情境區間")
         st.caption(
-            "校準方式：若其他變數不變，反推需要多少連槓獎金可讓該月預測更接近實際值，"
-            "再依校準後金額切成低 / 中 / 高 / 極高區間。"
+            "區間建立方式：先用 OLS 公式拆出不含連槓的基礎預測，再反推各回測月份的最佳連槓獎金，"
+            "並依 Q0/Q25/Q50/Q75/Q100 切成低 / 中 / 高 / 極高。"
         )
         scenario_display = calibrated.copy()
         scenario_display["區間"] = scenario_display.apply(
-            lambda row: f"{row['下限']:.2f} - {row['上限']:.2f} 億",
+            lambda row: f"{row['最小值']:.2f} - {row['最大值']:.2f} 億",
             axis=1,
         )
-        scenario_display["建議代入值"] = scenario_display["代入值"].map(lambda value: f"{value:.2f} 億")
+        scenario_display["中位數"] = scenario_display["中位數"].map(lambda value: f"{value:.2f} 億")
+        scenario_display["校準後MAE"] = scenario_display["校準後MAE"].map(lambda value: f"{value:.2f} 億")
+        scenario_display["校準後MAPE"] = scenario_display["校準後MAPE"].map(lambda value: f"{value:.2f}%")
         st.table(
-            scenario_display[["情境", "區間", "建議代入值", "樣本數"]]
+            scenario_display[["情境", "區間", "中位數", "校準後MAE", "校準後MAPE", "樣本數"]]
             .style.hide(axis="index")
         )
 
@@ -1697,6 +1831,7 @@ with left:
     input_label_prefix = "預估" if future_mode else "當月"
     jackpot_label = "預估最高連槓獎金（億）" if future_mode else "當月最高連槓獎金（億）"
     jackpot_source = "歷史實際資料"
+    jackpot_range = None
 
     if future_mode:
         st.write("預測情境設定")
@@ -1773,10 +1908,10 @@ with left:
                     scenario_values[scenario_name] = (fallback_value, scenario_name)
                 else:
                     source = (
-                        f"{scenario_name}（校準區間 {row['下限']:.2f} - {row['上限']:.2f} 億，"
-                        f"代入 {row['代入值']:.2f} 億）"
+                        f"{scenario_name}（校準區間 {row['最小值']:.2f} - {row['最大值']:.2f} 億，"
+                        f"代入中位數 {row['中位數']:.2f} 億）"
                     )
-                    scenario_values[scenario_name] = (float(row["代入值"]), source)
+                    scenario_values[scenario_name] = (float(row["中位數"]), source)
 
             if jackpot_scenario == "自訂":
                 jackpot = st.number_input(
@@ -1790,6 +1925,9 @@ with left:
                 jackpot_source = "使用者自訂"
             else:
                 jackpot, jackpot_source = scenario_values[jackpot_scenario]
+                row = calibrated_lookup.get(jackpot_scenario.replace("情境", ""))
+                if row is not None:
+                    jackpot_range = (float(row["最小值"]), float(row["最大值"]))
                 st.info(f"目前連槓獎金來源：{jackpot_source}，代入 {jackpot:.2f} 億元。")
 
             if not calibrated_scenarios.empty:
@@ -1797,12 +1935,14 @@ with left:
                     st.caption("區間由下方回測月份的誤差反推，目的是讓未來情境更貼近歷史回測表現。")
                     scenario_display = calibrated_scenarios.copy()
                     scenario_display["區間"] = scenario_display.apply(
-                        lambda row: f"{row['下限']:.2f} - {row['上限']:.2f} 億",
+                        lambda row: f"{row['最小值']:.2f} - {row['最大值']:.2f} 億",
                         axis=1,
                     )
-                    scenario_display["建議代入值"] = scenario_display["代入值"].map(lambda value: f"{value:.2f} 億")
+                    scenario_display["中位數"] = scenario_display["中位數"].map(lambda value: f"{value:.2f} 億")
+                    scenario_display["校準後MAE"] = scenario_display["校準後MAE"].map(lambda value: f"{value:.2f} 億")
+                    scenario_display["校準後MAPE"] = scenario_display["校準後MAPE"].map(lambda value: f"{value:.2f}%")
                     st.table(
-                        scenario_display[["情境", "區間", "建議代入值", "樣本數"]]
+                        scenario_display[["情境", "區間", "中位數", "校準後MAE", "校準後MAPE", "樣本數"]]
                         .style.hide(axis="index")
                     )
 
@@ -1957,6 +2097,19 @@ with right:
         st.write(f"預測月份：{selected_month_str}；去年同月：{base_month}")
         st.write(f"資料來源狀態：{source_status}")
         st.write(f"連槓獎金來源：{jackpot_source}")
+        if future_mode and jackpot_range is not None:
+            low_jackpot, high_jackpot = jackpot_range
+            low_features = features.copy()
+            high_features = features.copy()
+            low_features["jackpot"] = low_jackpot
+            high_features["jackpot"] = high_jackpot
+            low_prediction = predict_sales(low_features, beta)
+            high_prediction = predict_sales(high_features, beta)
+            st.info(
+                "此區間的連槓獎金範圍為 "
+                f"{low_jackpot:.2f} - {high_jackpot:.2f} 億，"
+                f"對應預測銷售額約 {low_prediction:.2f} - {high_prediction:.2f} 億元。"
+            )
         if future_mode:
             st.caption(
                 f"系統會自動和 {base_month} 比較，換算成模型需要的年增率與年變動；"
