@@ -1249,14 +1249,44 @@ def render_future_method_backtest(master_df, beta):
         )
         metric_card("誤差改善幅度", improvement_text, note=improvement_note)
 
-    display = backtest.copy()
-    display["誤差率"] = display["誤差率"].map(lambda value: f"{value:+.2f}%")
-    display["誤差(億)"] = display["誤差(億)"].map(lambda value: f"{value:+.2f}")
-    if "區間校準誤差率" in display.columns:
-        display["區間校準誤差率"] = display["區間校準誤差率"].map(lambda value: f"{value:+.2f}%")
-    if "區間校準誤差(億)" in display.columns:
-        display["區間校準誤差(億)"] = display["區間校準誤差(億)"].map(lambda value: f"{value:+.2f}")
-    st.table(display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
+    st.write("校準後回測重點")
+    key_columns = [
+        "月份",
+        "月份類型",
+        "實際連槓獎金(億)",
+        "校準後連槓獎金(億)",
+        "依最佳連槓區間分類",
+        "區間代表連槓獎金(億)",
+        "區間校準預測銷售額(億)",
+        "實際銷售額(億)",
+        "區間校準誤差(億)",
+        "區間校準誤差率",
+    ]
+    key_display = backtest[[column for column in key_columns if column in backtest.columns]].copy()
+    key_display = key_display.rename(
+        columns={
+            "依最佳連槓區間分類": "校準區間",
+            "區間代表連槓獎金(億)": "區間代表連槓(億)",
+            "區間校準預測銷售額(億)": "校準後預測銷售額(億)",
+            "區間校準誤差(億)": "校準後誤差(億)",
+            "區間校準誤差率": "校準後誤差率",
+        }
+    )
+    if "校準後誤差率" in key_display.columns:
+        key_display["校準後誤差率"] = key_display["校準後誤差率"].map(lambda value: f"{value:+.2f}%")
+    if "校準後誤差(億)" in key_display.columns:
+        key_display["校準後誤差(億)"] = key_display["校準後誤差(億)"].map(lambda value: f"{value:+.2f}")
+    st.table(key_display.style.hide(axis="index"))
+
+    with st.expander("查看完整回測計算欄位", expanded=False):
+        detail_display = backtest.copy()
+        detail_display["誤差率"] = detail_display["誤差率"].map(lambda value: f"{value:+.2f}%")
+        detail_display["誤差(億)"] = detail_display["誤差(億)"].map(lambda value: f"{value:+.2f}")
+        if "區間校準誤差率" in detail_display.columns:
+            detail_display["區間校準誤差率"] = detail_display["區間校準誤差率"].map(lambda value: f"{value:+.2f}%")
+        if "區間校準誤差(億)" in detail_display.columns:
+            detail_display["區間校準誤差(億)"] = detail_display["區間校準誤差(億)"].map(lambda value: f"{value:+.2f}")
+        st.table(detail_display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
 
     calibrated = build_calibrated_jackpot_scenarios(master_df, beta)
     if not calibrated.empty:
@@ -1279,9 +1309,15 @@ def render_future_method_backtest(master_df, beta):
 
     chart_data = backtest.melt(
         id_vars=["月份"],
-        value_vars=["預測銷售額(億)", "實際銷售額(億)"],
+        value_vars=["區間校準預測銷售額(億)", "實際銷售額(億)"],
         var_name="類型",
         value_name="銷售額(億)",
+    )
+    chart_data["類型"] = chart_data["類型"].replace(
+        {
+            "區間校準預測銷售額(億)": "校準後預測銷售額",
+            "實際銷售額(億)": "實際銷售額",
+        }
     )
     chart = (
         alt.Chart(chart_data)
