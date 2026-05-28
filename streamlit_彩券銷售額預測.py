@@ -1139,15 +1139,14 @@ def add_interval_calibration(backtest, scenarios, beta):
 
 def build_future_method_backtest(master_df, beta, include_interval=True):
     candidate_months = [
+        "2023-02",
+        "2023-06",
+        "2023-09",
+        "2023-12",
         "2024-02",
         "2024-06",
         "2024-09",
         "2024-12",
-        "2025-01",
-        "2025-02",
-        "2025-06",
-        "2025-10",
-        "2025-12",
     ]
 
     rows = []
@@ -1217,76 +1216,65 @@ def render_future_method_backtest(master_df, beta):
         return
 
     avg_abs_error = backtest["絕對誤差(億)"].mean()
-    avg_abs_pct_error = backtest["誤差率"].abs().mean()
-    calibrated_mae, calibrated_mape = error_metrics(
+    calibrated_mae, _ = error_metrics(
         backtest["實際銷售額(億)"],
         backtest["區間校準預測銷售額(億)"],
     )
-    improvement = (
-        (avg_abs_error - calibrated_mae) / avg_abs_error * 100
-        if calibrated_mae is not None and avg_abs_error
-        else None
-    )
+    avg_signed_error = (
+        backtest["區間校準預測銷售額(億)"] - backtest["實際銷售額(億)"]
+    ).mean()
 
     st.caption(
-        "回測做法：假裝下列月份還沒發生，用「去年同月 + 當時可得的近三年平均變化」先估總體變數，"
-        "再代入 OLS 模型，最後和該月實際銷售額比較。"
+        "回測做法：使用 2023-2024 年的月份，假裝該月尚未發生，"
+        "用「去年同月 + 當時可得的近三年平均變化」估總體變數，再代入 OLS 模型和實際銷售額比較。"
     )
     st.write("連槓獎金校準結果")
     m1, m2, m3 = st.columns(3)
     with m1:
-        metric_card("原估 MAE", f"{avg_abs_error:.2f} 億元", note=f"MAPE {avg_abs_pct_error:.1f}%")
+        metric_card("原本平均誤差", f"{avg_abs_error:.2f} 億元", note="未套用連槓區間代表值")
     with m2:
         calibrated_text = f"{calibrated_mae:.2f} 億元" if calibrated_mae is not None else "無法計算"
-        calibrated_note = f"MAPE {calibrated_mape:.1f}%" if calibrated_mape is not None else None
-        metric_card("區間校準 MAE", calibrated_text, note=calibrated_note)
+        metric_card("目前平均誤差", calibrated_text, note="套用連槓區間代表值")
     with m3:
-        improvement_text = f"{improvement:.1f}%" if improvement is not None else "無法計算"
-        improvement_note = (
-            f"MAE 從 {avg_abs_error:.2f} 億降到 {calibrated_mae:.2f} 億"
-            if calibrated_mae is not None
-            else None
+        metric_card(
+            "實際與預測平均差",
+            f"{avg_signed_error:+.2f} 億元",
+            note="正值代表預測高於實際，負值代表預測低於實際",
         )
-        metric_card("誤差改善幅度", improvement_text, note=improvement_note)
 
-    st.write("校準後回測重點")
+    st.write("回測重點")
     key_columns = [
         "月份",
         "月份類型",
         "實際連槓獎金(億)",
-        "校準後連槓獎金(億)",
         "依最佳連槓區間分類",
-        "區間代表連槓獎金(億)",
         "區間校準預測銷售額(億)",
         "實際銷售額(億)",
         "區間校準誤差(億)",
-        "區間校準誤差率",
     ]
     key_display = backtest[[column for column in key_columns if column in backtest.columns]].copy()
     key_display = key_display.rename(
         columns={
             "依最佳連槓區間分類": "校準區間",
-            "區間代表連槓獎金(億)": "區間代表連槓(億)",
-            "區間校準預測銷售額(億)": "校準後預測銷售額(億)",
-            "區間校準誤差(億)": "校準後誤差(億)",
-            "區間校準誤差率": "校準後誤差率",
+            "區間校準預測銷售額(億)": "預測銷售額(億)",
+            "區間校準誤差(億)": "實際與預測誤差(億)",
         }
     )
-    if "校準後誤差率" in key_display.columns:
-        key_display["校準後誤差率"] = key_display["校準後誤差率"].map(lambda value: f"{value:+.2f}%")
-    if "校準後誤差(億)" in key_display.columns:
-        key_display["校準後誤差(億)"] = key_display["校準後誤差(億)"].map(lambda value: f"{value:+.2f}")
+    if "實際與預測誤差(億)" in key_display.columns:
+        key_display["實際與預測誤差(億)"] = key_display["實際與預測誤差(億)"].map(lambda value: f"{value:+.2f}")
     st.table(key_display.style.hide(axis="index"))
 
     with st.expander("查看完整回測計算欄位", expanded=False):
         detail_display = backtest.copy()
-        detail_display["誤差率"] = detail_display["誤差率"].map(lambda value: f"{value:+.2f}%")
         detail_display["誤差(億)"] = detail_display["誤差(億)"].map(lambda value: f"{value:+.2f}")
-        if "區間校準誤差率" in detail_display.columns:
-            detail_display["區間校準誤差率"] = detail_display["區間校準誤差率"].map(lambda value: f"{value:+.2f}%")
         if "區間校準誤差(億)" in detail_display.columns:
             detail_display["區間校準誤差(億)"] = detail_display["區間校準誤差(億)"].map(lambda value: f"{value:+.2f}")
-        st.table(detail_display.drop(columns=["絕對誤差(億)"]).style.hide(axis="index"))
+        hidden_detail_columns = [
+            column
+            for column in ["絕對誤差(億)", "誤差率", "區間校準誤差率"]
+            if column in detail_display.columns
+        ]
+        st.table(detail_display.drop(columns=hidden_detail_columns).style.hide(axis="index"))
 
     calibrated = build_calibrated_jackpot_scenarios(master_df, beta)
     if not calibrated.empty:
@@ -1301,9 +1289,8 @@ def render_future_method_backtest(master_df, beta):
         )
         scenario_display["中位數"] = scenario_display["中位數"].map(lambda value: f"{value:.2f} 億")
         scenario_display["校準後MAE"] = scenario_display["校準後MAE"].map(lambda value: f"{value:.2f} 億")
-        scenario_display["校準後MAPE"] = scenario_display["校準後MAPE"].map(lambda value: f"{value:.2f}%")
         st.table(
-            scenario_display[["情境", "區間", "中位數", "校準後MAE", "校準後MAPE", "樣本數"]]
+            scenario_display[["情境", "區間", "中位數", "校準後MAE", "樣本數"]]
             .style.hide(axis="index")
         )
 
