@@ -1634,6 +1634,10 @@ st.markdown(
         border-color: #94b7e6;
         background: #f3f7ff;
     }
+    .metric-card-actual {
+        border-color: #45a46f;
+        background: #effaf4;
+    }
     .metric-card-neutral {
         background: #ffffff;
     }
@@ -1654,6 +1658,13 @@ st.markdown(
     }
     .metric-card-primary .metric-value {
         font-size: clamp(2.1rem, 4vw, 3.5rem);
+    }
+    .metric-card-actual .metric-value {
+        color: #16824c;
+        font-size: clamp(2rem, 3.5vw, 3.2rem);
+    }
+    .metric-card-actual .metric-label {
+        color: #276749;
     }
     .metric-note {
         color: #8a8f99;
@@ -2154,6 +2165,7 @@ with right:
                 "所選月份實際彩券銷售額",
                 f"{actual_sales:.2f} 億元",
                 note=f"預測誤差：{prediction - actual_sales:+.2f} 億元",
+                tone="actual",
             )
 
         with st.expander("帶入模型的變數", expanded=False):
