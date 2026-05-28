@@ -1147,6 +1147,9 @@ def build_future_method_backtest(master_df, beta, include_interval=True):
         "2024-06",
         "2024-09",
         "2024-12",
+        "2025-06",
+        "2025-10",
+        "2025-12",
     ]
 
     rows = []
@@ -1229,13 +1232,11 @@ def render_future_method_backtest(master_df, beta):
         "用「去年同月 + 當時可得的近三年平均變化」估總體變數，再代入 OLS 模型和實際銷售額比較。"
     )
     st.write("連槓獎金校準結果")
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     with m1:
-        metric_card("原本平均誤差", f"{avg_abs_error:.2f} 億元", note="未套用連槓區間代表值")
-    with m2:
         calibrated_text = f"{calibrated_mae:.2f} 億元" if calibrated_mae is not None else "無法計算"
-        metric_card("目前平均誤差", calibrated_text, note="套用連槓區間代表值")
-    with m3:
+        metric_card("平均誤差", calibrated_text, note="預測銷售額與實際銷售額的平均差距")
+    with m2:
         metric_card(
             "實際與預測平均差",
             f"{avg_signed_error:+.2f} 億元",
