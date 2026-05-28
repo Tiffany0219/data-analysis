@@ -1218,7 +1218,6 @@ def render_future_method_backtest(master_df, beta):
         st.info("目前沒有足夠資料可以做回測。")
         return
 
-    avg_abs_error = backtest["絕對誤差(億)"].mean()
     calibrated_mae, _ = error_metrics(
         backtest["實際銷售額(億)"],
         backtest["區間校準預測銷售額(億)"],
@@ -1228,21 +1227,26 @@ def render_future_method_backtest(master_df, beta):
     ).mean()
 
     st.caption(
-        "回測做法：使用 2023-2024 年的月份，假裝該月尚未發生，"
-        "用「去年同月 + 當時可得的近三年平均變化」估總體變數，再代入 OLS 模型和實際銷售額比較。"
+        "回測做法：使用 2023-2025 年部分月份，假設該月尚未發生，"
+        "先以「去年同月 + 當時可得的近三年平均變化」估算總體變數，"
+        "再代入 OLS 預測模型，最後與該月實際銷售額比較。"
     )
     st.write("連槓獎金校準結果")
     m1, m2 = st.columns(2)
     with m1:
         calibrated_text = f"{calibrated_mae:.2f} 億元" if calibrated_mae is not None else "無法計算"
-        metric_card("平均誤差", calibrated_text, note="預測銷售額與實際銷售額的平均差距")
+        metric_card("平均誤差", calibrated_text, note="數值越小，代表預測值越接近實際銷售額")
     with m2:
         metric_card(
             "實際與預測平均差",
             f"{avg_signed_error:+.2f} 億元",
-            note="正值代表預測高於實際，負值代表預測低於實際",
+            note="接近 0 代表模型沒有明顯高估或低估",
         )
 
+    st.caption(
+        "解讀方式：平均誤差代表模型預測通常會和實際銷售額相差多少；"
+        "實際與預測平均差則用來判斷模型是否整體偏高估或偏低估。"
+    )
     st.write("回測重點")
     key_columns = [
         "月份",
@@ -1280,8 +1284,9 @@ def render_future_method_backtest(master_df, beta):
     calibrated = build_calibrated_jackpot_scenarios(master_df, beta)
     if not calibrated.empty:
         st.caption(
-            "區間建立方式：先用 OLS 公式拆出不含連槓的基礎預測，再反推各回測月份的最佳連槓獎金，"
-            "並依 Q0/Q25/Q50/Q75/Q100 切成低 / 中 / 高 / 極高。"
+            "連槓區間建立方式：先拆出不含連槓獎金的基礎預測值，"
+            "再依回測月份反推出較貼近實際銷售額的連槓獎金區間，"
+            "用來輔助未來月份的低 / 中 / 高 / 極高連槓情境設定。"
         )
         scenario_display = calibrated.copy()
         scenario_display["區間"] = scenario_display.apply(
