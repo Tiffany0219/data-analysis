@@ -3,8 +3,8 @@
 Dep. Variable:             大樂透銷售總額(億)   R-squared:                       0.877
 Model:                            OLS   Adj. R-squared:                  0.871
 Method:                 Least Squares   F-statistic:                     152.4
-Date:                Wed, 27 May 2026   Prob (F-statistic):           1.16e-73
-Time:                        16:11:33   Log-Likelihood:                -465.49
+Date:                Sat, 30 May 2026   Prob (F-statistic):           1.16e-73
+Time:                        01:39:45   Log-Likelihood:                -465.49
 No. Observations:                 180   AIC:                             949.0
 Df Residuals:                     171   BIC:                             977.7
 Df Model:                           8                                         

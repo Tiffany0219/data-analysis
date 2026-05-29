@@ -3,8 +3,8 @@
 Dep. Variable:           電腦型彩券總銷售額(億)   R-squared:                       0.840
 Model:                            OLS   Adj. R-squared:                  0.832
 Method:                 Least Squares   F-statistic:                     112.2
-Date:                Wed, 27 May 2026   Prob (F-statistic):           6.22e-64
-Time:                        16:11:33   Log-Likelihood:                -576.42
+Date:                Sat, 30 May 2026   Prob (F-statistic):           6.22e-64
+Time:                        01:39:45   Log-Likelihood:                -576.42
 No. Observations:                 180   AIC:                             1171.
 Df Residuals:                     171   BIC:                             1200.
 Df Model:                           8                                         

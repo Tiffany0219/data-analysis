@@ -3,8 +3,8 @@
 Dep. Variable:             威力彩銷售總額(億)   R-squared:                       0.905
 Model:                            OLS   Adj. R-squared:                  0.901
 Method:                 Least Squares   F-statistic:                     204.7
-Date:                Wed, 27 May 2026   Prob (F-statistic):           2.16e-83
-Time:                        16:11:33   Log-Likelihood:                -466.72
+Date:                Sat, 30 May 2026   Prob (F-statistic):           2.16e-83
+Time:                        01:39:45   Log-Likelihood:                -466.72
 No. Observations:                 180   AIC:                             951.4
 Df Residuals:                     171   BIC:                             980.2
 Df Model:                           8                                         

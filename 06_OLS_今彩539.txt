@@ -3,8 +3,8 @@
 Dep. Variable:           今彩539銷售總額(億)   R-squared:                       0.462
 Model:                            OLS   Adj. R-squared:                  0.437
 Method:                 Least Squares   F-statistic:                     18.38
-Date:                Wed, 27 May 2026   Prob (F-statistic):           1.05e-19
-Time:                        16:11:33   Log-Likelihood:                -183.20
+Date:                Sat, 30 May 2026   Prob (F-statistic):           1.05e-19
+Time:                        01:39:45   Log-Likelihood:                -183.20
 No. Observations:                 180   AIC:                             384.4
 Df Residuals:                     171   BIC:                             413.1
 Df Model:                           8                                         
